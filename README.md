@@ -1,21 +1,22 @@
 # 🧬 Medical Literature Retrieval System (RAG + LLMs)
 
-End-to-end AI/NLP pipeline for biomedical research. Processes 50K+ PubMed articles and enables natural-language search and Q&A over the corpus using **BioBERT embeddings**, a **Chroma + FAISS hybrid vector store**, **LangChain** orchestration, and **Claude** for generation.
+End-to-end retrieval-augmented generation (RAG) pipeline for biomedical literature. Ingests PubMed abstracts (configurable, default 50K), and answers natural-language questions with cited sources using **biomedical sentence embeddings** (PubMedBERT), **hybrid retrieval** (dense vectors in Chroma + FAISS, fused with **BM25** keyword search), **LangChain** orchestration, and **Claude** for generation.
 
-> **Status:** ✅ Complete — 83 tests passing. See [Roadmap](#roadmap).
+> **Status:** Pipeline complete, 112 tests passing. Evaluation harness compares BM25, dense and hybrid retrieval; corpus-scale results are produced by `scripts/run_evaluation.py` and saved to `results/eval_results.json`.
 
 ---
 
-## 🎯 Key Results
+## 🎯 Evaluation
 
-| Metric | Value | How it's measured |
-|---|---|---|
-| Classification accuracy (domain tagging) | **78%** | Held-out test set of 2K manually-labeled articles |
-| Query relevance lift vs. BM25 baseline | **+40%** | NDCG@10 on 200-query eval set |
-| Retrieval latency (p95) | **30% faster** | FAISS IVF vs. Chroma brute-force, same corpus |
-| Corpus size | **50K+ articles** | Broad-scope PubMed ingestion |
+Run `python scripts/run_evaluation.py` after building the indices. It writes every number below to `results/eval_results.json`, together with the corpus size and embedding model used.
 
-*See [`src/evaluation/`](src/evaluation/) for the eval harness that produces these numbers.*
+| What | How it's measured |
+|---|---|
+| **Retrieval quality** — NDCG@10, Recall@10, MRR | Known-item search on 200 sampled articles: each article's title is the query, and that article is the correct answer. Compared across **BM25** (keyword baseline), **dense** (FAISS) and **hybrid** (dense + BM25 via Reciprocal Rank Fusion). |
+| **Domain consistency** | For each query article, does the nearest *other* article share its broad domain (oncology, cardiology, …, derived from MeSH headings)? Reported with a majority-class baseline for context. A sanity check on the embedding space, not a trained classifier. |
+| **Vector search latency** | FAISS (IVF) vs Chroma (HNSW) on the same real query embeddings, mean and p95. Excludes query embedding time, which dominates end-to-end latency. |
+
+**Limitations.** There is no human-labelled query set. Title-as-query evaluation is cheap and objective, but titles share exact words with their own abstracts, so it favours keyword search (BM25). A stronger evaluation would use a labelled biomedical benchmark such as BEIR's TREC-COVID, NFCorpus or SciFact.
 
 ---
 
@@ -33,8 +34,8 @@ End-to-end AI/NLP pipeline for biomedical research. Processes 50K+ PubMed articl
                                               └─────────┬──────────┘
                                                         │
                                               ┌─────────▼──────────┐
-                                              │  BioBERT Embedder  │
-                                              │  (HuggingFace)     │
+                                              │  PubMedBERT        │
+                                              │  sentence embedder │
                                               └─────────┬──────────┘
                                                         │
                           ┌─────────────────────────────┼─────────────────────────────┐
@@ -63,7 +64,16 @@ End-to-end AI/NLP pipeline for biomedical research. Processes 50K+ PubMed articl
 ```
 
 **Why both Chroma and FAISS?**
-Chroma gives persistence and rich metadata filtering (author, year, MeSH terms). FAISS gives sub-millisecond nearest-neighbor search at scale. We use Chroma as the source of truth and FAISS as a speed layer — measured in the eval suite.
+Chroma gives persistence and rich metadata filtering (journal, year, MeSH terms). FAISS gives very fast approximate nearest-neighbour search. Queries with a filter go to Chroma; plain similarity search goes to FAISS. Both hold the same vectors, so they are a routing choice, not two different opinions.
+
+**Why add BM25?**
+Dense embeddings match meaning ("heart attack" ≈ "myocardial infarction") but can miss exact tokens such as gene names (BRCA1), drug names and abbreviations. BM25 keyword search catches those. Hybrid mode fuses the dense and BM25 rankings with Reciprocal Rank Fusion (RRF), which combines ranks rather than raw scores, so the two very different score scales never need normalising. BM25 is also the standard baseline any embedding retriever should beat.
+
+**Why PubMedBERT (S-PubMedBert-MS-MARCO) rather than raw BioBERT?**
+BioBERT knows biomedical vocabulary but was trained to predict masked words, not to compare sentences, so its pooled vectors rank search results poorly. `pritamdeka/S-PubMedBert-MS-MARCO` starts from PubMedBERT and is fine-tuned for search on MS MARCO. Any sentence-transformers model can be swapped in via `EMBEDDING_MODEL` and compared with the eval script. (Note: that model's licence is CC BY-NC 2.0 — non-commercial.)
+
+**Ingesting more than 10,000 articles.**
+PubMed's search API only returns the first 10,000 IDs of any query, so the fetcher splits the query by publication year (newest first) and takes up to 9,999 IDs per year until the target is reached.
 
 ---
 
@@ -77,14 +87,15 @@ medical-rag/
 │   └── logging_config.py
 ├── src/
 │   ├── ingestion/         # Step 2 — PubMed fetcher + XML parser
-│   ├── processing/        # Step 3 — chunker + BioBERT embedder
-│   ├── retrieval/         # Step 4 — Chroma + FAISS + hybrid retriever
+│   ├── processing/        # Step 3 — chunker + sentence embedder
+│   ├── retrieval/         # Step 4 — Chroma + FAISS + BM25 + hybrid retriever
 │   ├── generation/        # Step 5 — prompts + RAG chain with Claude
 │   └── evaluation/        # Step 6 — metrics + eval harness
 ├── scripts/               # CLI entry points for each step
 ├── data/                  # (gitignored) raw, processed, vector stores
 ├── notebooks/             # Exploration + demos
-├── tests/                 # 83 pytest tests
+├── tests/                 # 112 pytest tests
+├── results/               # eval_results.json written by run_evaluation.py
 ├── docs/                  # Architecture notes, design decisions
 ├── requirements.txt
 ├── .env.example
@@ -96,10 +107,10 @@ medical-rag/
 ## 🚀 Quickstart
 
 ### Prerequisites
-- Python 3.10+
-- ~20 GB free disk (for 50K embedded articles + vector indices)
-- Anthropic API key ([console.anthropic.com](https://console.anthropic.com/))
-- NCBI account email (free, required by ToS)
+- Python 3.10, 3.11 or 3.12 (`numpy<2.0` has no wheels for 3.13+)
+- A few GB free disk for 50K embedded abstracts + indices, plus ~0.5 GB for the embedding model
+- NCBI contact email (free, required by NCBI's terms of use)
+- Anthropic API key ([console.anthropic.com](https://console.anthropic.com/)) — only needed to generate answers; ingestion, indexing and evaluation run without it
 
 ### Setup
 
@@ -117,7 +128,7 @@ pip install -r requirements.txt
 
 # 4. Configure environment
 cp .env.example .env
-# Edit .env — add ANTHROPIC_API_KEY and NCBI_EMAIL
+# Edit .env — add NCBI_EMAIL (and ANTHROPIC_API_KEY to generate answers)
 
 # 5. Verify setup
 python scripts/verify_setup.py
@@ -132,7 +143,7 @@ If `verify_setup.py` prints all green checks, you're ready for the pipeline.
 python scripts/run_ingestion.py
 python scripts/run_ingestion.py --resume    # if interrupted
 
-# Step 3: Chunk articles + embed with BioBERT (~30-60 min)
+# Step 3: Chunk articles + embed (~30-60 min on CPU for 50K)
 python scripts/run_processing.py
 
 # Step 4: Build vector store indices (~5 min)
@@ -140,10 +151,11 @@ python scripts/run_indexing.py
 
 # Step 5: Query the system
 python scripts/run_query.py "What are CRISPR off-target effects?"
+python scripts/run_query.py "BRCA1 breast cancer risk" --ensemble   # hybrid
 python scripts/run_query.py --interactive
 
-# Step 6: Run evaluation suite
-python scripts/run_evaluation.py --output results.json
+# Step 6: Run evaluation suite (writes results/eval_results.json)
+python scripts/run_evaluation.py
 
 # Step 7: Launch the demo UI
 streamlit run app.py
@@ -156,6 +168,7 @@ streamlit run app.py
 python scripts/run_ingestion.py --count 1000
 python scripts/run_processing.py
 python scripts/run_indexing.py
+python scripts/run_evaluation.py --n-queries 100
 streamlit run app.py
 ```
 
@@ -165,10 +178,11 @@ streamlit run app.py
 
 - [x] **Step 1** — Project scaffolding, config, logging
 - [x] **Step 2** — PubMed ingestion (50K articles via Entrez)
-- [x] **Step 3** — Chunking + BioBERT embedding pipeline
-- [x] **Step 4** — Chroma (persistent) + FAISS (fast ANN) vector stores
+- [x] **Step 3** — Chunking + biomedical embedding pipeline
+- [x] **Step 4** — Chroma (persistent) + FAISS (fast ANN) vector stores + BM25 keyword index
 - [x] **Step 5** — LangChain RAG chain with Claude + citation tracking
-- [x] **Step 6** — Evaluation harness (retrieval + generation metrics)
+- [x] **Step 6** — Evaluation harness (BM25 vs dense vs hybrid, domain consistency, latency)
+- [ ] **Next** — Evaluate on a labelled benchmark (BEIR TREC-COVID / NFCorpus), add a cross-encoder re-ranker, and score answer faithfulness with RAGAs
 - [x] **Step 7** — Streamlit demo UI
 
 ---
@@ -176,12 +190,13 @@ streamlit run app.py
 ## 🛠️ Tech Stack
 
 **Orchestration:** LangChain
-**Embeddings:** BioBERT (`dmis-lab/biobert-v1.1`) via HuggingFace
+**Embeddings:** `pritamdeka/S-PubMedBert-MS-MARCO` via sentence-transformers (BioBERT optional)
 **Vector Stores:** Chroma (persistent) + FAISS (ANN)
+**Keyword search:** BM25 (`rank-bm25`), fused with dense results via RRF
 **LLM:** Claude (Anthropic API)
 **Data Source:** PubMed via Biopython/Entrez
 **Demo:** Streamlit
-**Evaluation:** RAGAs + custom metrics
+**Evaluation:** custom retrieval metrics (NDCG, Recall, MRR) + scikit-learn
 **Language:** Python 3.10+
 
 ---
@@ -189,7 +204,7 @@ streamlit run app.py
 ## 🧪 Testing
 
 ```bash
-# Run the full test suite (83 tests)
+# Run the full test suite (112 tests)
 pytest tests/ -v
 
 # Run tests for a specific module
@@ -198,6 +213,7 @@ pytest tests/test_chunker.py -v      # Step 3: chunking logic
 pytest tests/test_retrieval.py -v    # Step 4: vector stores
 pytest tests/test_rag_chain.py -v    # Step 5: RAG chain + prompts
 pytest tests/test_evaluation.py -v   # Step 6: metrics
+pytest tests/test_fixes.py -v        # BM25, hybrid fusion, eval logic, PubMed slicing
 ```
 
 All tests run without API keys or data — the Claude API is mocked and vector stores use synthetic data.

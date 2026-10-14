@@ -6,12 +6,12 @@ Usage:
     python scripts/run_evaluation.py                  # Full eval suite
     python scripts/run_evaluation.py --retrieval-only  # Just retrieval metrics
     python scripts/run_evaluation.py --latency-only    # Just latency benchmark
-    python scripts/run_evaluation.py --classify-only   # Just classification eval
+    python scripts/run_evaluation.py --classify-only   # Just domain-consistency eval
     python scripts/run_evaluation.py --n-queries 50    # Smaller eval set (faster)
     python scripts/run_evaluation.py --output results.json  # Save to JSON
 
 Requires: Steps 2-4 completed (indices built).
-Produces: The metrics claimed in the README.
+Produces: The metrics reported in the README, saved to results/eval_results.json.
 """
 
 import argparse
@@ -35,7 +35,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--classify-only", action="store_true")
     parser.add_argument("--n-queries", type=int, default=200, help="Eval set size")
     parser.add_argument("--top-k", type=int, default=10)
-    parser.add_argument("--output", type=Path, default=None, help="Save results to JSON")
+    parser.add_argument("--output", type=Path, default=Path("results/eval_results.json"),
+                        help="Where to save results JSON (default: results/eval_results.json)")
     return parser.parse_args()
 
 
@@ -54,6 +55,7 @@ def main() -> int:
 
     # ── Initialize stores ───────────────────────────────────────────
     from src.processing.embedder import BioBERTEmbedder
+    from src.retrieval.bm25_store import BM25Store
     from src.retrieval.chroma_store import ChromaStore
     from src.retrieval.faiss_store import FAISSStore
     from src.retrieval.hybrid_retriever import HybridRetriever
@@ -61,10 +63,16 @@ def main() -> int:
         benchmark_stores,
         build_eval_set,
         compare_retrieval_methods,
-        evaluate_classification,
+        evaluate_domain_consistency,
     )
 
-    results = {}
+    results = {"config": {
+        "embedding_model": settings.embedding_model,
+        "faiss_index_type": settings.faiss_index_type,
+        "n_queries": args.n_queries,
+        "top_k": args.top_k,
+        "eval_method": "known-item search: article title as query, its PMID as the answer",
+    }}
 
     print("  Loading components...", flush=True)
     embedder = BioBERTEmbedder()
@@ -77,112 +85,96 @@ def main() -> int:
         print("  ✗ FAISS index not found. Run Step 4 first.")
         return 1
 
-    retriever = HybridRetriever(chroma, faiss_store)
-    print(f"  ✓ Loaded ({chroma.count:,} Chroma / {faiss_store.count:,} FAISS vectors)\n")
+    bm25 = BM25Store.from_faiss_store(faiss_store)
+    retriever = HybridRetriever(chroma, faiss_store, bm25)
+    print(f"  ✓ Loaded ({chroma.count:,} Chroma / {faiss_store.count:,} FAISS / "
+          f"{bm25.count:,} BM25 chunks)")
+    print(f"  ✓ Embedding model: {settings.embedding_model}\n")
+    results["config"]["chunks_indexed"] = faiss_store.count
 
     # ── Build eval set ──────────────────────────────────────────────
-    if run_all or args.retrieval_only or args.classify_only:
-        print(f"  Building eval set ({args.n_queries} queries)...", flush=True)
-        eval_set = build_eval_set(chunks_path, n_queries=args.n_queries)
-        print(f"  ✓ {len(eval_set)} eval queries\n")
+    eval_set = build_eval_set(chunks_path, n_queries=args.n_queries)
+    print(f"  ✓ {len(eval_set)} eval queries (title → own article)\n")
 
     # ── 1. Retrieval Evaluation ─────────────────────────────────────
     if run_all or args.retrieval_only:
-        print("=" * 55)
-        print("  📊 RETRIEVAL EVALUATION")
-        print("=" * 55)
+        print("=" * 60)
+        print("  📊 RETRIEVAL QUALITY  (BM25 baseline vs dense vs hybrid)")
+        print("=" * 60)
 
         start = time.time()
-        retrieval_results = compare_retrieval_methods(
-            chroma, faiss_store, retriever, embedder, eval_set, top_k=args.top_k,
+        r = compare_retrieval_methods(
+            retriever, embedder, eval_set, top_k=args.top_k, bm25_store=bm25,
         )
-        elapsed = time.time() - start
+        k = args.top_k
+        print(f"\n  {'Method':<10}{'NDCG@'+str(k):>10}{'Recall@'+str(k):>11}{'MRR':>8}{'ms/query':>10}")
+        for name in ("bm25", "dense", "hybrid"):
+            if name in r:
+                m = r[name]
+                print(f"  {name:<10}{m[f'mean_ndcg@{k}']:>10.4f}{m[f'mean_recall@{k}']:>11.4f}"
+                      f"{m['mean_mrr']:>8.4f}{m['mean_latency_ms']:>10.1f}")
+        c = r["comparison"]
+        if "dense_vs_bm25_ndcg_lift_pct" in c:
+            print(f"\n  → Dense  vs BM25 (NDCG): {c['dense_vs_bm25_ndcg_lift_pct']:+.1f}%")
+            print(f"  → Hybrid vs BM25 (NDCG): {c['hybrid_vs_bm25_ndcg_lift_pct']:+.1f}%")
+        print(f"  Completed in {time.time() - start:.1f}s\n")
+        results["retrieval"] = r
 
-        r = retrieval_results
-        print(f"\n  FAISS-only:")
-        print(f"    NDCG@{args.top_k}:     {r['faiss'][f'mean_ndcg@{args.top_k}']:.4f}")
-        print(f"    Precision@{args.top_k}: {r['faiss'][f'mean_precision@{args.top_k}']:.4f}")
-        print(f"    MRR:          {r['faiss']['mean_mrr']:.4f}")
-
-        print(f"\n  Ensemble (FAISS + Chroma + RRF):")
-        print(f"    NDCG@{args.top_k}:     {r['ensemble'][f'mean_ndcg@{args.top_k}']:.4f}")
-        print(f"    Precision@{args.top_k}: {r['ensemble'][f'mean_precision@{args.top_k}']:.4f}")
-        print(f"    MRR:          {r['ensemble']['mean_mrr']:.4f}")
-
-        print(f"\n  → Relevance improvement: {r['comparison']['ndcg_improvement_pct']:+.1f}%")
-        print(f"  Completed in {elapsed:.1f}s\n")
-
-        results["retrieval"] = retrieval_results
-
-    # ── 2. Classification Evaluation ────────────────────────────────
+    # ── 2. Domain Consistency ───────────────────────────────────────
     if run_all or args.classify_only:
-        print("=" * 55)
-        print("  🏷️  CLASSIFICATION EVALUATION")
-        print("=" * 55)
+        print("=" * 60)
+        print("  🏷️  DOMAIN CONSISTENCY  (does the nearest other article share the domain?)")
+        print("=" * 60)
 
         start = time.time()
-        class_results = evaluate_classification(
-            eval_set, retriever, embedder, top_k=args.top_k,
-        )
-        elapsed = time.time() - start
-
-        accuracy = class_results.get("accuracy", 0)
-        macro_f1 = class_results.get("macro_f1", 0)
-        print(f"\n  Accuracy:  {accuracy:.1%}")
-        print(f"  Macro F1:  {macro_f1:.4f}")
-        print(f"  Evaluated: {class_results['evaluated']} samples")
-        print(f"  Skipped:   {class_results['skipped_other']} ('other' domain)")
-
-        if "per_class" in class_results:
-            print(f"\n  Per-class breakdown:")
-            for label, metrics in sorted(class_results["per_class"].items()):
-                if metrics.get("support", 0) >= 3:
-                    print(f"    {label:20s}  F1={metrics['f1']:.3f}  (n={metrics['support']})")
-
-        print(f"\n  Completed in {elapsed:.1f}s\n")
-        results["classification"] = class_results
+        d = evaluate_domain_consistency(eval_set, retriever, embedder)
+        print(f"\n  Agreement:          {d.get('accuracy', 0):.1%}")
+        print(f"  Majority baseline:  {d.get('majority_baseline', 0):.1%}  (always guess the commonest domain)")
+        print(f"  Macro F1:           {d.get('macro_f1', 0):.4f}")
+        print(f"  Evaluated: {d['evaluated']}  |  Skipped (no domain match): {d['skipped_other']}")
+        if "per_class" in d:
+            print("\n  Per-domain:")
+            for label, m in sorted(d["per_class"].items()):
+                if m.get("support", 0) >= 3:
+                    print(f"    {label:20s}  F1={m['f1']:.3f}  (n={m['support']})")
+        print(f"\n  Completed in {time.time() - start:.1f}s\n")
+        results["domain_consistency"] = d
 
     # ── 3. Latency Benchmark ────────────────────────────────────────
     if run_all or args.latency_only:
-        print("=" * 55)
-        print("  ⏱️  LATENCY BENCHMARK")
-        print("=" * 55)
+        print("=" * 60)
+        print("  ⏱️  VECTOR SEARCH LATENCY  (FAISS vs Chroma, real query vectors)")
+        print("=" * 60)
 
         start = time.time()
-        latency_results = benchmark_stores(
-            chroma, faiss_store, n_queries=100, top_k=args.top_k,
-        )
-        elapsed = time.time() - start
-
-        f = latency_results["faiss"]
-        c = latency_results["chroma"]
-        print(f"\n  FAISS ({settings.faiss_index_type}):")
-        print(f"    Mean: {f['mean_ms']:.3f} ms  |  p95: {f['p95_ms']:.3f} ms")
-
-        print(f"\n  Chroma:")
-        print(f"    Mean: {c['mean_ms']:.3f} ms  |  p95: {c['p95_ms']:.3f} ms")
-
-        print(f"\n  → FAISS is {latency_results['speedup_factor']:.1f}x faster "
-              f"({latency_results['speedup_pct']:+.0f}%)")
-        print(f"  Completed in {elapsed:.1f}s\n")
-
-        results["latency"] = latency_results
+        query_vectors = [embedder.embed_single(e["query"]) for e in eval_set[:100]]
+        lat = benchmark_stores(chroma, faiss_store, top_k=args.top_k, query_vectors=query_vectors)
+        f, c = lat["faiss"], lat["chroma"]
+        print(f"\n  FAISS ({settings.faiss_index_type}):  mean {f['mean_ms']:.3f} ms  |  p95 {f['p95_ms']:.3f} ms")
+        print(f"  Chroma (HNSW):  mean {c['mean_ms']:.3f} ms  |  p95 {c['p95_ms']:.3f} ms")
+        print(f"\n  → FAISS mean latency vs Chroma: {-lat['latency_reduction_pct']:+.1f}% "
+              f"({lat['speedup_factor']:.2f}x speedup)")
+        print(f"  Completed in {time.time() - start:.1f}s\n")
+        results["latency"] = lat
 
     # ── Summary ─────────────────────────────────────────────────────
-    print("=" * 55)
-    print("  📋 SUMMARY — README METRICS")
-    print("=" * 55)
-
-    if "classification" in results:
-        print(f"  Classification accuracy: {results['classification'].get('accuracy', 0):.0%}")
+    print("=" * 60)
+    print("  📋 SUMMARY")
+    print("=" * 60)
     if "retrieval" in results:
-        print(f"  Query relevance lift:    {results['retrieval']['comparison']['ndcg_improvement_pct']:+.1f}%")
+        c = results["retrieval"]["comparison"]
+        print(f"  NDCG@{args.top_k}: BM25 {c.get('bm25_ndcg', 0):.3f} | dense {c.get('dense_ndcg', 0):.3f}"
+              f" | hybrid {c.get('hybrid_ndcg', 0):.3f}")
+    if "domain_consistency" in results:
+        d = results["domain_consistency"]
+        print(f"  Domain consistency: {d.get('accuracy', 0):.1%} (baseline {d.get('majority_baseline', 0):.1%})")
     if "latency" in results:
-        print(f"  FAISS speedup:           {results['latency']['speedup_pct']:+.0f}%")
+        print(f"  FAISS latency vs Chroma: {-results['latency']['latency_reduction_pct']:+.1f}%")
     print()
 
     # ── Save results ────────────────────────────────────────────────
     if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
         with open(args.output, "w") as f:
             json.dump(results, f, indent=2, default=str)
         print(f"  Results saved to {args.output}\n")

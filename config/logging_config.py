@@ -10,7 +10,6 @@ Logs to both console (formatted) and a rotating file. Every module should use:
 import logging
 import logging.handlers
 import sys
-from pathlib import Path
 
 from config.config import settings
 

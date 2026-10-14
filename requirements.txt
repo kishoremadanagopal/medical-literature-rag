@@ -1,6 +1,6 @@
 # =============================================================================
 # Medical Literature Retrieval System — Dependencies
-# Python 3.10+ required
+# Python 3.10–3.12 (numpy<2.0 below has no wheels for Python 3.13+)
 # =============================================================================
 
 # ---- LLM & Orchestration ----
@@ -19,6 +19,7 @@ accelerate>=1.1.0                  # Faster inference on CPU/GPU
 # ---- Vector Stores ----
 chromadb>=0.5.20                   # Persistent vector DB with metadata filtering
 faiss-cpu>=1.9.0                   # Fast similarity search (use faiss-gpu if CUDA)
+rank-bm25>=0.2.2                   # BM25 keyword search (baseline + hybrid retrieval)
 
 # ---- Data Ingestion ----
 biopython>=1.84                    # Entrez/PubMed API client

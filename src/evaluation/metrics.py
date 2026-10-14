@@ -18,14 +18,13 @@ Three categories:
 3. CLASSIFICATION METRICS — Can the system tag articles by domain?
    - Accuracy, F1, precision, recall on domain classification
 
-The README claims:
-   - 78% classification accuracy → measured by classify_and_evaluate()
-   - 40% higher query relevance → measured by compare_retrieval_methods()
-   - 30% faster retrieval → measured by benchmark_latency()
+Where each README number comes from (see eval_harness.py):
+   - Retrieval quality (NDCG/Recall/MRR vs BM25) → compare_retrieval_methods()
+   - Domain consistency → evaluate_domain_consistency()
+   - FAISS vs Chroma latency → benchmark_stores() / benchmark_latency()
 """
 
 import time
-from typing import Optional
 
 import numpy as np
 
@@ -68,7 +67,8 @@ def ndcg_at_k(retrieved_ids: list[str], relevant_ids: set[str], k: int) -> float
     NDCG rewards placing relevant docs at higher positions.
     Score of 1.0 means perfect ranking; 0.0 means no relevant docs retrieved.
 
-    This is the metric behind the "40% higher query relevance" claim.
+    With a single relevant article per query (our known-item eval set),
+    NDCG@k = 1 / log2(rank + 1) if the article is found at that rank, else 0.
     """
     top_k = retrieved_ids[:k]
     if not top_k or not relevant_ids:
@@ -202,7 +202,7 @@ def benchmark_latency(
     Benchmark a search function over multiple queries and runs.
     Returns p50, p95, p99, mean latency in milliseconds.
 
-    Used to produce the "30% faster" claim by comparing FAISS vs Chroma.
+    Used to compare FAISS vs Chroma search latency.
     """
     all_latencies = []
 

@@ -6,8 +6,8 @@ Why FAISS alongside Chroma?
     - IVF (Inverted File Index) partitions vectors into clusters, then
       only searches the nearest clusters → O(sqrt(N)) instead of O(N)
     - Used as the "speed layer" in our hybrid retriever — when you don't
-      need metadata filtering, FAISS is 30%+ faster (this is one of
-      the metrics in the README)
+      need metadata filtering, route to FAISS (benchmarked against Chroma
+      in scripts/run_evaluation.py)
 
 Trade-offs vs Chroma:
     - No built-in metadata filtering (we maintain a side-car index)
@@ -22,7 +22,7 @@ Index types:
 
 import json
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Optional
 
 import faiss
 import numpy as np

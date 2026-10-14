@@ -39,6 +39,7 @@ def main() -> int:
         ("langchain-anthropic", "langchain_anthropic"),
         ("chromadb", "chromadb"),
         ("faiss-cpu", "faiss"),
+        ("rank-bm25", "rank_bm25"),
         ("transformers", "transformers"),
         ("sentence-transformers", "sentence_transformers"),
         ("biopython", "Bio"),
@@ -57,12 +58,11 @@ def main() -> int:
         from config.config import settings
         check("config/config.py loads", True)
 
-        ok = settings.anthropic_api_key.startswith("sk-ant-")
-        all_ok &= check(
-            "ANTHROPIC_API_KEY set",
-            ok,
-            "" if ok else "key missing or wrong format in .env",
-        )
+        if settings.anthropic_api_key.startswith("sk-ant-"):
+            check("ANTHROPIC_API_KEY set", True)
+        else:
+            print(f"  {WARN} ANTHROPIC_API_KEY not set  "
+                  "(only needed to generate answers; ingestion, indexing and evaluation work without it)")
 
         ok = "@" in settings.ncbi_email and "example.com" not in settings.ncbi_email
         all_ok &= check(

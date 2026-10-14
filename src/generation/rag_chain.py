@@ -26,7 +26,6 @@ from typing import Optional
 
 import anthropic
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -79,6 +78,7 @@ class MedicalRAGChain:
     def client(self) -> anthropic.Anthropic:
         """Lazy-load the Anthropic client."""
         if self._client is None:
+            _require_api_key()
             self._client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
         return self._client
 
@@ -86,6 +86,7 @@ class MedicalRAGChain:
     def llm(self) -> ChatAnthropic:
         """Lazy-load the LangChain ChatAnthropic model."""
         if self._llm is None:
+            _require_api_key()
             self._llm = ChatAnthropic(
                 model=self.model,
                 temperature=self.temperature,
@@ -122,7 +123,9 @@ class MedicalRAGChain:
         query_vec = self.embedder.embed_single(question)
 
         if ensemble:
-            docs = self.retriever.retrieve_ensemble(query_vec, top_k=top_k, where=where)
+            docs = self.retriever.retrieve_ensemble(
+                query_vec, top_k=top_k, where=where, query_text=question
+            )
         else:
             docs = self.retriever.retrieve(query_vec, top_k=top_k, where=where)
 
@@ -225,7 +228,9 @@ class MedicalRAGChain:
         query_vec = self.embedder.embed_single(question)
 
         if ensemble:
-            docs = self.retriever.retrieve_ensemble(query_vec, top_k=top_k, where=where)
+            docs = self.retriever.retrieve_ensemble(
+                query_vec, top_k=top_k, where=where, query_text=question
+            )
         else:
             docs = self.retriever.retrieve(query_vec, top_k=top_k, where=where)
 
@@ -271,7 +276,9 @@ class MedicalRAGChain:
         top_k = top_k or settings.top_k
 
         query_vec = self.embedder.embed_single(topic)
-        docs = self.retriever.retrieve_ensemble(query_vec, top_k=top_k, where=where)
+        docs = self.retriever.retrieve_ensemble(
+            query_vec, top_k=top_k, where=where, query_text=topic
+        )
 
         context = format_context(docs)
         user_message = SUMMARY_TEMPLATE.format(context=context)
@@ -297,6 +304,15 @@ class MedicalRAGChain:
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
+
+def _require_api_key() -> None:
+    """Fail with a clear message if generation is attempted without a key."""
+    if not settings.anthropic_api_key:
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY is not set. Add it to .env to generate answers "
+            "(ingestion, indexing and evaluation do not need it)."
+        )
+
 
 def _extract_cited_pmids(text: str) -> set[str]:
     """

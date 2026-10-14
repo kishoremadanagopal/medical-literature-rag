@@ -31,13 +31,16 @@ class Settings(BaseSettings):
     )
 
     # -------- Anthropic Claude API --------
-    anthropic_api_key: str = Field(..., description="Claude API key")
+    # Optional at load time so ingestion, indexing and evaluation run without a
+    # key. Only answer generation (rag_chain) needs it, and it checks there.
+    anthropic_api_key: str = Field(default="", description="Claude API key")
     claude_model: str = Field(default="claude-sonnet-4-5")
     claude_max_tokens: int = Field(default=2048, ge=1, le=8192)
     claude_temperature: float = Field(default=0.1, ge=0.0, le=1.0)
 
     # -------- NCBI / PubMed --------
-    ncbi_email: str = Field(..., description="Required by NCBI ToS")
+    # Required by NCBI terms of use for ingestion; checked by the fetcher.
+    ncbi_email: str = Field(default="", description="Required by NCBI ToS")
     ncbi_api_key: Optional[str] = Field(default=None)
 
     # -------- Ingestion --------
@@ -46,7 +49,10 @@ class Settings(BaseSettings):
     pubmed_query: str = Field(default="")
 
     # -------- Embeddings --------
-    embedding_model: str = Field(default="dmis-lab/biobert-v1.1")
+    # Default: PubMedBERT fine-tuned for retrieval on MS MARCO (768-dim).
+    # Raw BioBERT (dmis-lab/biobert-v1.1) also works but was never trained for
+    # sentence similarity, so it ranks noticeably worse for search.
+    embedding_model: str = Field(default="pritamdeka/S-PubMedBert-MS-MARCO")
     embedding_batch_size: int = Field(default=32, ge=1)
     embedding_device: Literal["cpu", "cuda", "mps"] = Field(default="cpu")
 

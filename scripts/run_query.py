@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("question", nargs="?", help="Question to ask")
     parser.add_argument("--interactive", "-i", action="store_true", help="Interactive mode")
     parser.add_argument("--summarize", action="store_true", help="Summarize a topic instead of Q&A")
-    parser.add_argument("--ensemble", action="store_true", help="Use ensemble retrieval (both stores)")
+    parser.add_argument("--ensemble", action="store_true", help="Use hybrid retrieval (embeddings + BM25 keyword search)")
     parser.add_argument("--top-k", type=int, default=None, help="Number of documents to retrieve")
     parser.add_argument("--journal", type=str, default=None, help="Filter by journal name")
     parser.add_argument("--json", action="store_true", help="Output raw JSON")
@@ -46,7 +46,7 @@ def init_chain():
     from src.retrieval.hybrid_retriever import HybridRetriever
     from src.generation.rag_chain import MedicalRAGChain
 
-    print("  Loading BioBERT embedder...", end=" ", flush=True)
+    print("  Loading embedding model...", end=" ", flush=True)
     embedder = BioBERTEmbedder()
     _ = embedder.model  # Force load
     print("✓")
@@ -60,7 +60,12 @@ def init_chain():
     faiss_store.load()
     print(f"✓ ({faiss_store.count:,} vectors)")
 
-    retriever = HybridRetriever(chroma, faiss_store)
+    from src.retrieval.bm25_store import BM25Store
+    print("  Building BM25 keyword index...", end=" ", flush=True)
+    bm25 = BM25Store.from_faiss_store(faiss_store)
+    print(f"✓ ({bm25.count:,} chunks)")
+
+    retriever = HybridRetriever(chroma, faiss_store, bm25)
     chain = MedicalRAGChain(retriever, embedder)
 
     return chain
