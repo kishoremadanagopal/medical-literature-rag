@@ -1,19 +1,15 @@
+# Secrets
 .env
-.env.local
-data/raw/
-data/processed/
-data/embeddings/
-data/chroma_db/
-data/faiss_index/
-logs/
-__pycache__/
-*.pyc
-*.py[cod]
-.pytest_cache/
+
+# Created by the app / setup (rebuilt locally, never committed)
+chroma_db/
 venv/
 .venv/
-*.egg-info/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# OS / editor
 .DS_Store
-.ipynb_checkpoints/
-htmlcov/
-.coverage
+.vscode/
