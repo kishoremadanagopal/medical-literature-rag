@@ -1,11 +1,19 @@
 """
-BioBERT embedding pipeline.
+Embedding pipeline (sentence-transformers).
 
-Why BioBERT over general-purpose embeddings (e.g. text-embedding-ada-002)?
-    - Pre-trained on 18B tokens from PubMed abstracts + PMC full-text
-    - Understands biomedical terminology (e.g. "BRCA1 mutation" vs "brake mutation")
-    - 30% higher accuracy on biomedical NER/RE benchmarks vs vanilla BERT
-    - Runs locally — no API costs, no rate limits, full control
+Default model: pritamdeka/S-PubMedBert-MS-MARCO
+    - PubMedBERT (pre-trained on PubMed abstracts + full text), then
+      fine-tuned on MS MARCO for search: query → relevant passage.
+    - 768-dim vectors, runs locally — no API costs, no rate limits.
+
+Why not raw BioBERT (dmis-lab/biobert-v1.1)?
+    - BioBERT knows biomedical vocabulary, but it was trained for masked-word
+      prediction, not for sentence similarity. Loading it in
+      sentence-transformers silently adds mean pooling, and the resulting
+      vectors rank search results poorly. A model fine-tuned for retrieval
+      fixes that. Any sentence-transformers model can be set via
+      EMBEDDING_MODEL in .env (BioBERT included) and compared with
+      scripts/run_evaluation.py.
 
 We use sentence-transformers as the wrapper because it handles:
     - Pooling (mean of token embeddings)
@@ -28,7 +36,8 @@ logger = get_logger(__name__)
 
 class BioBERTEmbedder:
     """
-    Embeds text chunks using BioBERT via sentence-transformers.
+    Embeds text chunks with a biomedical sentence-transformers model.
+    (Class name kept from the original BioBERT version for compatibility.)
 
     Lazy-loads the model on first use (~500MB download on first run,
     ~2 seconds to load from cache after that).
@@ -65,7 +74,7 @@ class BioBERTEmbedder:
 
     @property
     def dimension(self) -> int:
-        """Embedding vector dimension (768 for BioBERT)."""
+        """Embedding vector dimension (768 for BERT-base models)."""
         return self.model.get_sentence_embedding_dimension()
 
     def embed_texts(self, texts: list[str], show_progress: bool = True) -> np.ndarray:

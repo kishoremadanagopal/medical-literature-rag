@@ -2,7 +2,8 @@
 PubMed article fetcher — pulls articles from NCBI via Entrez API.
 
 Architecture:
-    1. esearch  → get PMIDs matching query (up to target_count)
+    1. esearch  → get PMIDs matching query, one publication year at a time
+                  (PubMed caps each query at 10,000 IDs)
     2. efetch   → download full XML records in batches
     3. parse    → extract structured fields (see parser.py)
     4. save     → append to JSONL file (one JSON object per line)
@@ -18,6 +19,7 @@ Key design decisions:
 
 import json
 import time
+from datetime import date
 from pathlib import Path
 from typing import Optional
 
@@ -36,6 +38,10 @@ logger = get_logger(__name__)
 DELAY_WITH_KEY = 0.11
 DELAY_WITHOUT_KEY = 0.34
 
+# PubMed ESearch hard limit: only the first 10,000 results of a query are
+# reachable, so each date-sliced query asks for at most this many IDs.
+MAX_IDS_PER_QUERY = 9_999
+
 
 class PubMedFetcher:
     """
@@ -53,8 +59,16 @@ class PubMedFetcher:
         batch_size: Optional[int] = None,
         query: Optional[str] = None,
         output_dir: Optional[Path] = None,
+        start_year: Optional[int] = None,
+        min_year: int = 1990,
     ):
+        if not settings.ncbi_email:
+            raise ValueError("NCBI_EMAIL must be set in .env (required by NCBI terms of use).")
+
         self.target_count = target_count or settings.pubmed_target_count
+        # Start from last year so the newest slice is a complete year.
+        self.start_year = start_year or (date.today().year - 1)
+        self.min_year = min_year
         self.batch_size = batch_size or settings.pubmed_batch_size
         self.query = query or settings.pubmed_query or self._default_query()
         self.output_dir = output_dir or settings.raw_data_dir
@@ -159,29 +173,50 @@ class PubMedFetcher:
 
         logger.info("Searching PubMed for matching article IDs...")
 
-        # esearch with usehistory for server-side result caching
-        handle = Entrez.esearch(
-            db="pubmed",
-            term=self.query,
-            retmax=self.target_count,
-            sort="relevance",
-            usehistory="y",
-        )
-        results = Entrez.read(handle)
-        handle.close()
+        # PubMed's ESearch only returns the first 10,000 IDs of any query
+        # (retstart + retmax <= 10,000). To collect more, we split the query
+        # into publication-year slices, newest first, and take up to
+        # MAX_IDS_PER_QUERY from each slice until the target is reached.
+        pmids: list[str] = []
+        seen: set[str] = set()
+        year = self.start_year
 
-        pmids = results.get("IdList", [])
-        actual_count = min(len(pmids), self.target_count)
-        pmids = pmids[:actual_count]
+        while len(pmids) < self.target_count and year >= self.min_year:
+            remaining = self.target_count - len(pmids)
+            slice_ids = self._search_ids(
+                retmax=min(MAX_IDS_PER_QUERY, remaining),
+                mindate=str(year),
+                maxdate=str(year),
+            )
+            new_ids = [p for p in slice_ids if p not in seen]
+            seen.update(new_ids)
+            pmids.extend(new_ids)
+            logger.info(f"  {year}: +{len(new_ids)} PMIDs (total {len(pmids)})")
+            year -= 1
 
+        pmids = pmids[: self.target_count]
         logger.info(f"Found {len(pmids)} PMIDs (requested {self.target_count})")
 
         # Cache PMIDs so resume doesn't re-query
         with open(self.pmids_file, "w") as f:
             json.dump(pmids, f)
 
-        time.sleep(self.delay)
         return pmids
+
+    def _search_ids(self, retmax: int, mindate: str, maxdate: str) -> list[str]:
+        """One ESearch call restricted to a publication-date range."""
+        handle = Entrez.esearch(
+            db="pubmed",
+            term=self.query,
+            retmax=retmax,
+            datetype="pdat",
+            mindate=mindate,
+            maxdate=maxdate,
+        )
+        results = Entrez.read(handle)
+        handle.close()
+        time.sleep(self.delay)
+        return list(results.get("IdList", []))
 
     # ── Batch Fetching ──────────────────────────────────────────────
 

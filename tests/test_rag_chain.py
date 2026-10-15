@@ -7,7 +7,7 @@ Run: pytest tests/test_rag_chain.py -v
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

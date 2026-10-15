@@ -7,7 +7,6 @@ Run: pytest tests/test_retrieval.py -v
 
 import json
 import sys
-import tempfile
 from pathlib import Path
 
 import numpy as np

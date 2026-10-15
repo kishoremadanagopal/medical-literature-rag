@@ -125,7 +125,7 @@ def main() -> int:
         return 1
 
     print(f"\n{'='*50}")
-    print(f"  Step 4 complete — vector stores ready")
+    print("  Step 4 complete — vector stores ready")
     print(f"{'='*50}\n")
     return 0
 

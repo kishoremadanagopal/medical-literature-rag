@@ -4,7 +4,14 @@ Hybrid retriever — routes queries to the right vector store.
 Strategy:
     - Query has metadata filters (year, journal, MeSH) → Chroma
     - Query is pure similarity search → FAISS (faster)
-    - Both results can be merged and deduplicated for ensemble retrieval
+    - Hybrid (ensemble) mode fuses DENSE results (FAISS, or Chroma when a
+      filter is set) with SPARSE keyword results (BM25) using Reciprocal Rank
+      Fusion. Dense search finds paraphrases; BM25 finds exact terms such as
+      gene and drug names. Fusing the two usually beats either alone.
+
+Note: Chroma and FAISS hold the *same* embeddings, so fusing Chroma with FAISS
+adds nothing — the two rankings are near-identical. That older behaviour is
+kept only as a fallback when no BM25 index is supplied.
 
 This is the component that LangChain's RAG chain will call in Step 5.
 It implements a clean interface: query in → ranked documents out.
@@ -43,9 +50,11 @@ class HybridRetriever:
         self,
         chroma_store: ChromaStore,
         faiss_store: FAISSStore,
+        bm25_store=None,
     ):
         self.chroma = chroma_store
         self.faiss = faiss_store
+        self.bm25 = bm25_store  # Optional BM25Store for hybrid dense + keyword retrieval
 
     def retrieve(
         self,
@@ -106,66 +115,68 @@ class HybridRetriever:
         top_k: int = None,
         where: Optional[dict] = None,
         weights: tuple[float, float] = (0.5, 0.5),
+        query_text: Optional[str] = None,
     ) -> list[dict]:
         """
-        Merge results from both stores using Reciprocal Rank Fusion (RRF).
+        Hybrid retrieval: merge two rankings with Reciprocal Rank Fusion (RRF).
 
-        RRF is a robust rank-merging algorithm that doesn't depend on score
-        normalization between stores. It ranks items by:
+        RRF ranks items by  sum(weight_i / (k + rank_in_list_i)),  k = 60.
+        It only uses ranks, so the very different score scales of cosine
+        similarity and BM25 never have to be normalised against each other.
 
-            RRF_score = sum(1 / (k + rank_in_store_i))
-
-        where k=60 (standard constant that dampens high-rank dominance).
+        Lists fused:
+            - With a BM25 index and query_text: dense (FAISS, or Chroma if a
+              metadata filter is set) + BM25 keyword results.
+            - Otherwise (fallback): Chroma + FAISS.
 
         Args:
-            query_embedding: 768-dim query vector
+            query_embedding: Query vector
             top_k: Final number of merged results
-            where: Optional metadata filter (applied to Chroma only)
-            weights: (chroma_weight, faiss_weight) for weighted RRF
+            where: Optional metadata filter (dense side goes through Chroma)
+            weights: (dense_weight, sparse_weight) — or (chroma, faiss) in fallback
+            query_text: Raw query text, needed for BM25
 
         Returns:
             Merged, deduplicated, re-ranked results.
         """
         top_k = top_k or settings.top_k
-        fetch_k = top_k * 2  # Over-fetch from each store before merging
+        fetch_k = top_k * 2  # Over-fetch from each list before merging
 
-        # Get results from both stores
-        chroma_results = self.chroma.search(
-            query_embedding, top_k=fetch_k, where=where
-        )
-        faiss_results = self.faiss.search(query_embedding, top_k=fetch_k)
+        if self.bm25 is not None and query_text:
+            if where:
+                dense = self.chroma.search(query_embedding, top_k=fetch_k, where=where)
+                sparse = self._filter_by_metadata(
+                    self.bm25.search(query_text, top_k=fetch_k * 5), where
+                )[:fetch_k]
+            else:
+                dense = self.faiss.search(query_embedding, top_k=fetch_k)
+                sparse = self.bm25.search(query_text, top_k=fetch_k)
+            lists = [(dense, weights[0]), (sparse, weights[1])]
+            label = "dense+bm25"
+        else:
+            chroma_results = self.chroma.search(query_embedding, top_k=fetch_k, where=where)
+            faiss_results = self.faiss.search(query_embedding, top_k=fetch_k)
+            lists = [(chroma_results, weights[0]), (faiss_results, weights[1])]
+            label = "chroma+faiss"
 
-        # Apply Reciprocal Rank Fusion
-        k = 60  # Standard RRF constant
-        rrf_scores: dict[str, float] = {}
-        all_results: dict[str, dict] = {}
-
-        for rank, result in enumerate(chroma_results):
-            chunk_id = result["chunk_id"]
-            rrf_scores[chunk_id] = rrf_scores.get(chunk_id, 0) + weights[0] / (k + rank + 1)
-            all_results[chunk_id] = result
-
-        for rank, result in enumerate(faiss_results):
-            chunk_id = result["chunk_id"]
-            rrf_scores[chunk_id] = rrf_scores.get(chunk_id, 0) + weights[1] / (k + rank + 1)
-            if chunk_id not in all_results:
-                all_results[chunk_id] = result
-
-        # Sort by RRF score and return top_k
-        ranked = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
-
-        output = []
-        for chunk_id, rrf_score in ranked:
-            result = all_results[chunk_id]
-            result["rrf_score"] = round(rrf_score, 6)
-            result["source"] = "ensemble"
-            output.append(result)
+        output = reciprocal_rank_fusion(lists, top_k=top_k)
+        for r in output:
+            r["source"] = "ensemble"
 
         logger.debug(
-            f"Ensemble retrieval: {len(chroma_results)} chroma + "
-            f"{len(faiss_results)} faiss → {len(output)} merged"
+            f"Ensemble ({label}): " + " + ".join(str(len(l)) for l, _ in lists)
+            + f" → {len(output)} merged"
         )
         return output
+
+    @staticmethod
+    def _filter_by_metadata(results: list[dict], where: dict) -> list[dict]:
+        """Apply a simple {field: value} equality filter to BM25 results."""
+        def keep(r):
+            meta = r.get("metadata", {})
+            return all(str(meta.get(k, "")) == str(v) for k, v in where.items()
+                       if not k.startswith("$"))
+        return [r for r in results if keep(r)]
 
     def retrieve_by_text(
         self,
@@ -181,5 +192,37 @@ class HybridRetriever:
         """
         query_vec = embedder.embed_single(query_text)
         if ensemble:
-            return self.retrieve_ensemble(query_vec, top_k=top_k, where=where)
+            return self.retrieve_ensemble(
+                query_vec, top_k=top_k, where=where, query_text=query_text
+            )
         return self.retrieve(query_vec, top_k=top_k, where=where)
+
+
+def reciprocal_rank_fusion(
+    ranked_lists: list[tuple[list[dict], float]],
+    top_k: int,
+    k: int = 60,
+) -> list[dict]:
+    """
+    Weighted Reciprocal Rank Fusion over result lists keyed by chunk_id.
+
+    Args:
+        ranked_lists: [(results, weight), ...], each results list best-first
+        top_k: Number of fused results to return
+        k: RRF damping constant (60 is the value from the original paper)
+    """
+    scores: dict[str, float] = {}
+    first_seen: dict[str, dict] = {}
+    for results, weight in ranked_lists:
+        for rank, result in enumerate(results):
+            cid = result["chunk_id"]
+            scores[cid] = scores.get(cid, 0.0) + weight / (k + rank + 1)
+            first_seen.setdefault(cid, result)
+
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+    output = []
+    for cid, score in ranked:
+        result = dict(first_seen[cid])
+        result["rrf_score"] = round(score, 6)
+        output.append(result)
+    return output

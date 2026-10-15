@@ -12,9 +12,7 @@ This is the portfolio demo interface. It shows:
     5. System metrics (retrieval time, generation time)
 """
 
-import json
 import time
-from pathlib import Path
 
 import streamlit as st
 
@@ -76,7 +74,7 @@ st.markdown("""
 
 # ── Initialization ──────────────────────────────────────────────────
 
-@st.cache_resource(show_spinner="Loading BioBERT model...")
+@st.cache_resource(show_spinner="Loading embedding model...")
 def load_embedder():
     from src.processing.embedder import BioBERTEmbedder
     embedder = BioBERTEmbedder()
@@ -89,11 +87,13 @@ def load_stores():
     from src.retrieval.chroma_store import ChromaStore
     from src.retrieval.faiss_store import FAISSStore
     from src.retrieval.hybrid_retriever import HybridRetriever
+    from src.retrieval.bm25_store import BM25Store
 
     chroma = ChromaStore()
     faiss_store = FAISSStore()
     faiss_store.load()
-    retriever = HybridRetriever(chroma, faiss_store)
+    bm25 = BM25Store.from_faiss_store(faiss_store)
+    retriever = HybridRetriever(chroma, faiss_store, bm25)
     return chroma, faiss_store, retriever
 
 
@@ -120,7 +120,7 @@ with st.sidebar:
     # Search settings
     st.markdown("### Settings")
     top_k = st.slider("Documents to retrieve", 3, 20, 8)
-    use_ensemble = st.toggle("Ensemble retrieval (RRF)", value=False,
+    use_ensemble = st.toggle("Hybrid retrieval (embeddings + BM25, RRF)", value=False,
                               help="Merge results from both FAISS and Chroma using Reciprocal Rank Fusion")
 
     st.divider()
@@ -200,13 +200,15 @@ if (search_clicked or summarize_clicked) and query:
     if search_clicked:
         # ── Streaming answer ────────────────────────────────────────
         with st.status("Searching medical literature...", expanded=True) as status:
-            st.write("Embedding query with BioBERT...")
+            st.write("Embedding query...")
             retrieval_start = time.time()
             query_vec = embedder.embed_single(query)
 
             st.write(f"Retrieving top {top_k} documents...")
             if use_ensemble:
-                docs = retriever.retrieve_ensemble(query_vec, top_k=top_k, where=where)
+                docs = retriever.retrieve_ensemble(
+                    query_vec, top_k=top_k, where=where, query_text=query
+                )
             else:
                 docs = retriever.retrieve(query_vec, top_k=top_k, where=where)
             retrieval_ms = (time.time() - retrieval_start) * 1000
@@ -218,7 +220,7 @@ if (search_clicked or summarize_clicked) and query:
         col1, col2, col3 = st.columns(3)
         col1.metric("Retrieved", f"{len(docs)} docs")
         col2.metric("Retrieval", f"{retrieval_ms:.0f} ms")
-        col3.metric("Mode", "Ensemble" if use_ensemble else "FAISS")
+        col3.metric("Mode", "Hybrid" if use_ensemble else "Dense (FAISS)")
 
         st.divider()
 
