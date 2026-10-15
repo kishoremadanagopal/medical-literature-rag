@@ -2,14 +2,39 @@
 
 Ask a medical question in plain English. The app searches PubMed abstracts two ways (by meaning and by keywords), merges the results, and Google Gemini answers using only those abstracts, citing each claim as `[PMID:12345]`.
 
-```
-Question → FAISS (meaning) + BM25 (keywords) → Reciprocal Rank Fusion
-         → fetch records from Chroma → Gemini answers from those abstracts, with citations
-```
-
 All the code is in **one file: `app.py`**. The first build creates a `chroma_db` folder next to it: that's the database, managed by Chroma; you never need to open it.
 
 Get the code with `git clone https://github.com/kishoremadanagopal/medical-literature-rag.git`, or on GitHub click **Code → Download ZIP** and unzip it.
+
+## Architecture
+
+**Build the database** (once, from the sidebar):
+
+```mermaid
+flowchart LR
+    A["PubMed E-utilities<br/>ESearch → PMIDs<br/>EFetch → XML"] --> B["Parse XML<br/>title · abstract · journal<br/>year · MeSH terms"]
+    B --> C["One chunk per article<br/>title + abstract"]
+    C --> D["PubMedBERT embedder<br/>768 numbers per article"]
+    D --> E[("Chroma database<br/>chroma_db/<br/>ID = PMID · text · metadata · vector")]
+```
+
+**Answer a question** (every time). At app start, the vectors in Chroma are loaded into FAISS and the texts into BM25, and kept in memory.
+
+```mermaid
+flowchart TD
+    Q["Your question"] --> F{"Year or journal<br/>filter set?"}
+    F -- yes --> W["Chroma where-query<br/>→ IDs that match"]
+    F -- no --> S["Search all records<br/>or only the allowed IDs"]
+    W --> S
+    S --> V["FAISS · by meaning<br/>question embedded with PubMedBERT"]
+    S --> K["BM25 · by keywords"]
+    V --> R["Reciprocal Rank Fusion<br/>score = Σ 1 / (60 + rank)"]
+    K --> R
+    R --> T["Top 8 PMIDs"]
+    T --> C[("Chroma<br/>fetch full records by ID")]
+    C --> G["Gemini<br/>answer only from these abstracts<br/>cite every claim as [PMID:n]"]
+    G --> O["Answer + sources<br/>cited sources marked ✅"]
+```
 
 ## What you need
 
