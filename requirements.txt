@@ -1,59 +1,9 @@
-# =============================================================================
-# Medical Literature Retrieval System — Dependencies
-# Python 3.10–3.12 (numpy<2.0 below has no wheels for Python 3.13+)
-# =============================================================================
-
-# ---- LLM & Orchestration ----
-anthropic>=0.39.0                  # Official Claude API SDK
-langchain>=0.3.7                   # Orchestration framework
-langchain-anthropic>=0.3.0         # Claude integration for LangChain
-langchain-community>=0.3.5         # Community integrations (Chroma, FAISS adapters)
-langchain-huggingface>=0.1.2       # HuggingFace embeddings wrapper
-
-# ---- Embeddings (BioBERT) ----
-transformers>=4.46.0               # HuggingFace transformers (loads BioBERT)
-sentence-transformers>=3.3.0       # Clean wrapper for embedding models
-torch>=2.5.0                       # Required by transformers
-accelerate>=1.1.0                  # Faster inference on CPU/GPU
-
-# ---- Vector Stores ----
-chromadb>=0.5.20                   # Persistent vector DB with metadata filtering
-faiss-cpu>=1.9.0                   # Fast similarity search (use faiss-gpu if CUDA)
-rank-bm25>=0.2.2                   # BM25 keyword search (baseline + hybrid retrieval)
-
-# ---- Data Ingestion ----
-biopython>=1.84                    # Entrez/PubMed API client
-requests>=2.32.0                   # HTTP fallback for E-utilities
-lxml>=5.3.0                        # Fast XML parsing for PubMed records
-
-# ---- Data Processing ----
-pandas>=2.2.0
-numpy>=1.26.0,<2.0                 # <2.0 for compatibility with torch/chroma
-tqdm>=4.66.0                       # Progress bars for long-running jobs
-nltk>=3.9.0                        # Sentence tokenization for chunking
-
-# ---- Configuration & Utilities ----
-python-dotenv>=1.0.0               # Load .env files
-pydantic>=2.9.0                    # Data validation
-pydantic-settings>=2.6.0           # Settings management (separate package in v2)
-pyyaml>=6.0.0
-
-# ---- Demo Interface ----
-streamlit>=1.40.0                  # Demo UI for the RAG system
-
-# ---- Evaluation ----
-scikit-learn>=1.5.0                # Classification metrics
-ragas>=0.2.6                       # RAG-specific eval framework
-datasets>=3.1.0                    # HuggingFace datasets (eval sets)
-
-# ---- Notebooks ----
-jupyter>=1.1.0
-ipykernel>=6.29.0
-matplotlib>=3.9.0
-seaborn>=0.13.0
-
-# ---- Testing & Quality ----
-pytest>=8.3.0
-pytest-cov>=6.0.0
-black>=24.10.0
-ruff>=0.7.0
+streamlit>=1.50
+sentence-transformers>=3.0
+faiss-cpu>=1.9
+chromadb>=1.0
+rank-bm25>=0.2.2
+google-genai>=1.0
+requests>=2.31
+python-dotenv>=1.0
+numpy>=2.0
